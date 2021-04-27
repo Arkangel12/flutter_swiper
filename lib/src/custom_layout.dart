@@ -1,5 +1,15 @@
 part of 'swiper.dart';
 
+class WidgetData {
+  WidgetData({
+    required this.index,
+    required this.widget,
+  });
+
+  int index;
+  Widget widget;
+}
+
 abstract class _CustomLayoutStateBase<T extends _SubSwiper> extends State<T>
     with SingleTickerProviderStateMixin {
   double? _swiperWidth;
@@ -8,6 +18,8 @@ abstract class _CustomLayoutStateBase<T extends _SubSwiper> extends State<T>
   AnimationController? _animationController;
   late int _startIndex;
   int? _animationCount;
+  int _currentIndex = 0;
+  bool _reverseSwipeDirection = false;
 
   @override
   void initState() {
@@ -16,6 +28,9 @@ abstract class _CustomLayoutStateBase<T extends _SubSwiper> extends State<T>
         '==============\n\nwidget.itemWith must not be null when use stack layout.\n========\n',
       );
     }
+
+    // Initial index
+    _currentIndex = widget.index ?? 0;
 
     _createAnimationController();
     widget.controller!.addListener(_onController);
@@ -80,25 +95,32 @@ abstract class _CustomLayoutStateBase<T extends _SubSwiper> extends State<T>
 
   Widget _buildItem(int i, int realIndex, double animationValue);
 
-  Widget _buildContainer(List<Widget> list) {
+  Widget _buildContainer(List<WidgetData> list) {
     return Stack(
-      children: list,
+      children: [
+        for (var data in list)
+          data.widget
+      ]
     );
   }
 
   Widget _buildAnimation(BuildContext context, Widget? w) {
-    var list = <Widget>[];
+    var list = <WidgetData>[];
 
     final animationValue = _animation.value;
 
     for (var i = 0; i < _animationCount!; ++i) {
       var realIndex = _currentIndex + i + _startIndex;
+
+      if (!widget.loop! && (realIndex < 0 || realIndex >= widget.itemCount!))
+        continue;
+
       realIndex = realIndex % widget.itemCount!;
       if (realIndex < 0) {
         realIndex += widget.itemCount!;
       }
 
-      list.add(_buildItem(i, realIndex, animationValue));
+      list.add(WidgetData(index: i, widget: _buildItem(i, realIndex, animationValue)));
     }
 
     return GestureDetector(
@@ -194,9 +216,13 @@ abstract class _CustomLayoutStateBase<T extends _SubSwiper> extends State<T>
   void _onPanEnd(DragEndDetails details) {
     if (_lockScroll) return;
 
-    final velocity = widget.scrollDirection == Axis.horizontal
+    var velocity = widget.scrollDirection == Axis.horizontal
         ? details.velocity.pixelsPerSecond.dx
         : details.velocity.pixelsPerSecond.dy;
+
+    if (_reverseSwipeDirection) {
+      velocity = -velocity;
+    }
 
     if (_animationController!.value >= 0.75 || velocity > 500.0) {
       if (_currentIndex <= 0 && !widget.loop!) {
@@ -223,13 +249,20 @@ abstract class _CustomLayoutStateBase<T extends _SubSwiper> extends State<T>
 
   void _onPanUpdate(DragUpdateDetails details) {
     if (_lockScroll) return;
-    var value = _currentValue +
-        ((widget.scrollDirection == Axis.horizontal
+    
+    var delta = ((widget.scrollDirection == Axis.horizontal
                     ? details.globalPosition.dx
                     : details.globalPosition.dy) -
                 _currentPos) /
             _swiperWidth! /
             2;
+
+    if (_reverseSwipeDirection) {
+      delta = -delta;
+    }
+
+    var value = _currentValue + delta;
+
     // no loop ?
     if (!widget.loop!) {
       if (_currentIndex >= widget.itemCount! - 1) {
@@ -245,8 +278,6 @@ abstract class _CustomLayoutStateBase<T extends _SubSwiper> extends State<T>
 
     _animationController!.value = value;
   }
-
-  int _currentIndex = 0;
 }
 
 double? _getValue(List<double?> values, double animationValue, int index) {
@@ -346,8 +377,15 @@ class CustomLayoutOption {
   final List<TransformBuilder> builders = [];
   final int startIndex;
   final int? stateCount;
+  final bool sortByScale;
+  final bool reverseSwipeDirection;
 
-  CustomLayoutOption({this.stateCount, required this.startIndex});
+  CustomLayoutOption({
+    this.stateCount,
+    required this.startIndex,
+    this.sortByScale: false,
+    this.reverseSwipeDirection: false,
+  });
 
   CustomLayoutOption addOpacity(List<double> values) {
     builders.add(OpacityTransformBuilder(values: values));
@@ -413,13 +451,59 @@ class _CustomLayoutState extends _CustomLayoutStateBase<_CustomLayoutSwiper> {
     super.didChangeDependencies();
     _startIndex = widget.option.startIndex;
     _animationCount = widget.option.stateCount;
+    _reverseSwipeDirection = widget.option.reverseSwipeDirection;
   }
 
   @override
   void didUpdateWidget(_CustomLayoutSwiper oldWidget) {
     _startIndex = widget.option.startIndex;
     _animationCount = widget.option.stateCount;
+    _reverseSwipeDirection = widget.option.reverseSwipeDirection;
     super.didUpdateWidget(oldWidget);
+  }
+
+  List<WidgetData> _sortByScale(List<WidgetData> list) {
+    // Go through builders and look for scale.
+    ScaleTransformBuilder? scaleBuilder = null;
+    List<double?>? scales = null;
+    for (var builder in widget.option.builders) {
+      if (builder is ScaleTransformBuilder) {
+        scaleBuilder = builder;
+        scales = builder.values;
+      }
+    }
+
+    if (scales != null && scales.length >= _animationCount!) {
+      // Sort WidgetDatas by scale.
+      list.sort((a, b) {
+        if (scales != null) {
+          double? scaleA = _getValue(scales, _animation.value, a.index);
+          double? scaleB = _getValue(scales, _animation.value, b.index);
+          if (scaleA != null && scaleB != null) {
+            if (scaleA < scaleB)
+              return -1;
+            else if (scaleA > scaleB)
+              return 1;
+          }
+        }
+        return 0;
+      });
+    }
+    return list;
+  }
+
+  @override
+  Widget _buildContainer(List<WidgetData> list) {
+    if (widget.option.sortByScale) {
+      list = _sortByScale(list);
+    }
+
+    return Stack(
+      children: [
+        for (var data in list)
+          data.widget
+      ]
+    );
   }
 
   @override
